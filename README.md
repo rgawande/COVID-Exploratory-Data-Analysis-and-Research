@@ -1,4 +1,4 @@
-# COVID-Exploratory-Data-Analsis-and-Research
+# COVID-Exploratory-Data-Analysis-and-Research
 
 1.	How the percent of the total population with confirmed covid-19 has changed in different countries from February through October. In which countries, the disease has spread the fastest and the slowest. How has the disease spread on different continents? What are the 5 most and least infected countries in each continent?
 
