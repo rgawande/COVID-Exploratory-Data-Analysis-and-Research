@@ -1,0 +1,1015 @@
+---
+title: "Final Project"
+author: "Sumeet Sarode, Rushikesh Gawande, Jashjeet Singh Madan"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(gapminder)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(RColorBrewer)
+library(lubridate)
+library(spatstat.utils)
+library(openair)
+
+cb_palette = c("#999999", "#D95F02", "#1B9E77", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2","#D55E00", "#CC79A7")
+```
+
+## Generating the dataset
+
+### Continent data
+Downloaded from: https://unstats.un.org/unsd/methodology/m49/overview/
+
+```{r}
+continents = read.csv('UNSD — Methodology LCM-916-LC-LOGO.csv')
+# names(continents)
+continents = rename(continents, continent="ï..continent")
+
+head(continents)
+```
+### Population data
+Downloaded from: https://www.gapminder.org/data/documentation/gd003/
+
+```{r}
+population = read.csv('population_total.csv')
+population= population[,c('country','X2020')]
+population = rename(population, population="X2020")
+
+head(population)
+```
+### Land area per country data
+Downloaded from: https://www.gapminder.org/data/documentation/gd003/
+
+```{r}
+land = read.csv('land area.csv')
+land = merge(x=land, y=population)
+
+land$pop_density = land$population/land$land_area
+
+density = land[,c('country', 'land_area', 'pop_density')]
+
+head(density)
+```
+
+### Generating dataset with COVID-19 cases, deaths, and recovered cases
+Downloaded from: https://github.com/CSSEGISandData/COVID-19/tree/master/csse_covid_19_data/csse_covid_19_time_series
+
+#### COVID-19 cases data
+```{r}
+cases = read.csv('time_series_covid19_confirmed_global.csv')
+cases = subset(cases, select=-c(X1.22.20:X1.31.20, Lat, Long, Province.State))
+```
+```{r}
+temp = subset(cases, select=-c(Country.Region))
+dates = names(temp)
+
+cat('Start Date:',first(dates),'\n\nEnd Date',last(dates))
+```
+
+```{r}
+cases = gather(cases, "date", "cases", all_of(dates))
+
+cases = setNames(aggregate(list(cases$cases), by = list(cases$Country.Region, cases$date),sum), c("country", "date", "cases"))
+
+head(cases)
+```
+
+```{r}
+deaths = read.csv('time_series_covid19_deaths_global.csv')
+deaths = subset(deaths, select=-c(X1.22.20:X1.31.20, Lat, Long, Province.State))
+```
+```{r}
+temp = subset(deaths, select=-c(Country.Region))
+dates = names(temp)
+
+cat('Start Date:',first(dates),'\n\nEnd Date',last(dates))
+```
+#### COVID-19 deaths data
+
+```{r}
+deaths = gather(deaths, "date", "deaths", all_of(dates))
+
+deaths = setNames(aggregate(list(deaths$deaths), by = list(deaths$Country.Region, deaths$date),sum), c("country", "date", "deaths"))
+
+head(deaths)
+```
+#### COVID-19 recovered cases data
+
+```{r}
+recovered = read.csv('time_series_covid19_recovered_global.csv')
+recovered = subset(recovered, select=-c(X1.22.20:X1.31.20, Lat, Long, Province.State))
+```
+```{r}
+temp = subset(recovered, select=-c(Country.Region))
+dates = names(temp)
+
+cat('Start Date:',first(dates),'\n\nEnd Date',last(dates))
+```
+
+```{r}
+recovered = gather(recovered, "date", "recovered", all_of(dates))
+
+recovered = setNames(aggregate(list(recovered$recovered), by = list(recovered$Country.Region, recovered$date),sum), c("country", "date", "recovered"))
+
+head(recovered)
+```
+
+### Merging all the datasets
+
+```{r}
+data = merge(x=cases, y=deaths)
+data = merge(x=data, y=recovered)
+
+data = left_join(data,continents,by = c("country"="country"))
+
+data = left_join(data,population,by = c("country"="country"))
+
+data = left_join(data,density,by = c("country"="country"))
+
+data$date = str_replace(data$date, 'X', '')
+
+data$day = day(as.Date(data$date,"%m.%d.%y"))
+
+data$month = month(as.Date(data$date,"%m.%d.%y"))
+
+month_names = c("January","February","March","April","May","June","July","August","September", "October","November","December")
+data$month = month_names[data$month]
+
+data = data[data$continent!='Oceania',]
+
+data$date = as.Date(data$date,"%m.%d.%y")
+
+# write.csv(distinct(data), 'data.csv', row.names=FALSE)
+```
+
+
+```{r}
+data = read.csv('data.csv')
+data = na.omit(data)
+head(data)
+```
+
+
+
+```{r}
+df = data[,c('country', 'continent', 'cases', 'deaths','recovered','month', 'pop_density', "land_area")]
+
+df = setNames(aggregate(list(df$cases, df$deaths, df$recovered), by=list(df$country, df$continent, df$month),sum), c("country",'continent','month','cases', 'deaths','recovered'))
+
+df = distinct(merge(x=df, y=data[,c('country','population')]))
+df = distinct(merge(x=df, y=data[,c('country','pop_density')]))
+df = distinct(merge(x=df, y=data[,c('country','land_area')]))
+
+head(df)
+```
+```{r}
+month_names = c("February","March","April","May","June","July","August","September", "October")
+
+actuals_df = data.frame()
+
+for (i in unique(df$country)){
+  temp = df[df$country==i,]
+  
+  sort_key=factor(temp$month, levels=month_names)
+  temp=temp[order(sort_key),]
+  
+  temp$cases = c(temp$cases[1],diff(temp$cases))
+  temp$deaths = c(temp$deaths[1],diff(temp$deaths))
+  temp$recovered = c(temp$recovered[1],diff(temp$recovered))
+  
+  actuals_df = rbind(actuals_df, temp)
+}
+
+```
+
+```{r}
+cont_df = setNames(aggregate(list(df$cases, df$deaths, df$recovered, df$population, df$land_area), by=list(df$continent, df$month),sum), c('continent','month','cases', 'deaths', 'recovered', 'population', 'land_area'))
+
+cont_df$pop_density = cont_df$population / cont_df$land_area
+
+head(cont_df)
+```
+```{r}
+cont_actuals_df = setNames(aggregate(list(actuals_df$cases, actuals_df$deaths, actuals_df$recovered, actuals_df$population, actuals_df$land_area), by=list(actuals_df$continent, actuals_df$month),sum), c('continent','month','cases', 'deaths','recovered','population', 'land_area'))
+
+cont_actuals_df$pop_density = cont_actuals_df$population / cont_actuals_df$land_area
+
+head(cont_actuals_df)
+```
+
+```{r}
+df$recovery_rate = df$recovered / df$cases
+df$death_rate = df$deaths / df$cases
+df = replace(df, is.na(df), 0)
+
+actuals_df$recovery_rate = actuals_df$recovered / actuals_df$cases
+actuals_df$death_rate = actuals_df$deaths / actuals_df$cases
+actuals_df = replace(actuals_df, is.na(actuals_df), 0)
+
+cont_df$recovery_rate = cont_df$recovered / cont_df$cases
+cont_df$death_rate = cont_df$deaths / cont_df$cases
+cont_df = replace(cont_df, is.na(cont_df), 0)
+
+cont_actuals_df$recovery_rate = cont_actuals_df$recovered / cont_actuals_df$cases
+cont_actuals_df$death_rate = cont_actuals_df$deaths / cont_actuals_df$cases
+cont_actuals_df = replace(cont_actuals_df, is.na(cont_actuals_df), 0)
+```
+
+### Plotting new cases date-wise
+Referred from: https://bookdown.org/david_carslaw/openair/sec-calendarPlot.html
+
+```{r,fig.width=7,fig.height=7}
+temp = setNames(aggregate(list(data$cases, data$deaths, data$recovered), by=list(data$date),sum), c('date','cases', 'deaths','recovered'))
+temp$date = as.Date(temp$date,"%Y-%m-%d")
+temp = temp[order(temp$date),]
+
+temp$cases = c(temp$cases[1],diff(temp$cases))
+temp$recovered = c(temp$recovered[1],diff(temp$recovered))
+temp$deaths = c(temp$deaths[1],diff(temp$deaths))
+
+# calendarPlot(temp, pollutant = 'cases', year = 2020, main = "Daily new COVID-19 Cases", cols='Oranges')
+```
+
+### Plotting Recovered cases 
+
+```{r,fig.width=7,fig.height=7}
+# calendarPlot(temp, pollutant = 'recovered', year = 2020, main = "Recovered Cases", cols='Greens')
+```
+
+### Plotting Death cases 
+
+```{r,fig.width=7,fig.height=7}
+# calendarPlot(temp, pollutant = 'deaths', year = 2020, main = "Deaths", cols='Reds')
+```
+
+## Question 1. 
+### 10 least cases per capita countries
+```{r,fig.width=7,fig.height=7}
+temp = data[data$date==max(as.Date(data$date,"%Y-%m-%d")),]
+temp = temp[order(temp$cases/temp$population),]
+temp = temp[1:10,]
+
+temp$country<-factor(temp$country, levels=temp$country)
+
+ggplot(temp, aes(x=100*cases/population, y=country, fill=continent)) + geom_bar(stat = "identity", width=.5) + coord_flip() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + ylab('Country') + xlab('Cases per Capita') + ggtitle('10 least cases per capita countries') + scale_color_manual(values = cb_palette)
+```
+
+### 10 highest cases per capita countries
+
+```{r,fig.width=7,fig.height=7}
+temp = data[data$date==max(as.Date(data$date,"%Y-%m-%d")),]
+temp = temp[order(-temp$cases/temp$population),]
+temp = temp[1:10,]
+
+temp$country<-factor(temp$country, levels = temp$country)
+
+ggplot(temp, aes(x=100*cases/population, y=country, fill=continent)) + geom_bar(stat = "identity", width=.5)+coord_flip() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + ylab('Country') + xlab('Cases per Capita') + ggtitle('10 highest cases per capita countries') + scale_color_manual(values = cb_palette)
+```
+
+### Per capita COVID-19 cases in each continent conditioned on month (population Density)
+
+```{r,fig.width=7,fig.height=7}
+cont_df$month_f = factor(cont_df$month, levels=month_names)
+
+ggplot(cont_df, aes(x=continent, y=cases/population, size=pop_density, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Continent') + ylab('Per capita COVID-19 cases') + ggtitle('Per capita COVID-19 cases in each continent ',subtitle='conditioned on month') + scale_color_manual(values = cb_palette)
+```
+
+### New COVID-19 cases in each continent conditioned on month (population Density)
+
+```{r,fig.width=7,fig.height=7}
+cont_actuals_df$month_f = factor(cont_actuals_df$month, levels=month_names)
+
+ggplot(cont_actuals_df, aes(x=continent, y=cases, size=pop_density, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Continent') + ylab('new COVID-19 cases') + ggtitle('New COVID-19 cases in each continent',subtitle='conditioned on month') + scale_color_manual(values = cb_palette)
+```
+
+### Per capita COVID-19 cases in each continent conditioned on month (population)
+
+```{r,fig.width=7,fig.height=7}
+cont_df$month_f = factor(cont_df$month, levels=month_names)
+
+ggplot(cont_df, aes(x=continent, y=cases/population, size=population, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Continent') + ylab('Per capita COVID-19 cases') + ggtitle('Per capita COVID-19 cases in each continent',subtitle='conditioned on month') + scale_color_manual(values = cb_palette)
+```
+
+### New COVID-19 cases in each continent conditioned on month (population)
+
+```{r,fig.width=7,fig.height=7}
+cont_actuals_df$month_f = factor(cont_actuals_df$month, levels=month_names)
+
+ggplot(cont_actuals_df, aes(x=continent, y=cases, size=population, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Continent') + ylab('new COVID-19 cases') + ggtitle('New COVID-19 cases in each continent',subtitle='conditioned on month') + scale_color_manual(values = cb_palette)
+```
+
+
+### Per capita COVID-19 cases vs population density
+
+```{r,fig.width=7,fig.height=7}
+cont_df$month_f = factor(cont_df$month, levels=month_names)
+
+ggplot(cont_df, aes(x=pop_density , y=cases/population, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Per capita COVID-19 cases') + ggtitle('Per capita COVID-19 cases vs population density') + scale_color_manual(values = cb_palette)
+```
+
+### New COVID-19 cases vs population density
+
+```{r,fig.width=7,fig.height=7}
+cont_actuals_df$month_f = factor(cont_actuals_df$month, levels=month_names)
+
+ggplot(cont_actuals_df, aes(x=pop_density , y=cases/population, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('new COVID-19 cases') + ggtitle('New COVID-19 cases vs population density') + scale_color_manual(values = cb_palette)
+```
+
+### Per capita COVID-19 cases vs population (log)
+
+```{r,fig.width=7,fig.height=7}
+cont_df$month_f = factor(cont_df$month, levels=month_names)
+
+ggplot(cont_df, aes(x=log10(population) , y=cases/population, color=continent)) + geom_point() + facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Per capita COVID-19 cases') + ggtitle('Per capita COVID-19 cases vs population (log)') + scale_color_manual(values = cb_palette)
+```
+
+### New COVID-19 cases vs population (log)
+
+```{r,fig.width=7,fig.height=7}
+cont_actuals_df$month_f = factor(cont_actuals_df$month, levels=month_names)
+
+ggplot(cont_actuals_df, aes(x=log10(population) , y=cases/population, color=continent)) + geom_point() +  facet_wrap(~month_f, ncol=3) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('new COVID-19 cases') + ggtitle('New COVID-19 cases vs population (log)') + scale_color_manual(values = cb_palette)
+```
+
+## Quetion 2
+
+### Recovery rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='October',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_fast$type = 'Fastest recovering countries'
+asia_slow$type = 'Slowest recovering countries'
+
+africa_df = df[df$continent=='Africa' & df$month=='October',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_fast$type = 'Fastest recovering countries'
+africa_slow$type = 'Slowest recovering countries'
+
+america_df = df[df$continent=='Americas'& df$month=='October',]
+america_fast = semi_join(df, america_df[order(-america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_fast$type = 'Fastest recovering countries'
+america_slow$type = 'Slowest recovering countries'
+
+europe_df = df[df$continent=='Europe' & df$month=='October',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_fast$type = 'Fastest recovering countries'
+europe_slow$type = 'Slowest recovering countries'
+
+recovery_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow)
+fast_recovery = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_recovery = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+#### 3 Fastest recovering countries in each continent
+
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Fastest recovering countries in each continent')
+```
+
+#### 3 Slowest recovering countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(slow_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Slowest recovering countries in each continent')
+```
+
+#### Recovery rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('Recovery rate in continents')
+```
+
+#### Recovery rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Recovery rate (%)') + ggtitle('Recovery rate in continents') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,2200))
+```
+
+#### Recovery rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Recovery rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+
+### Death Rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='October',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+africa_df = df[df$continent=='Africa' & df$month=='October',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+america_df = df[df$continent=='Americas'& df$month=='October',]
+america_fast = semi_join(df, america_df[order(-america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+europe_df = df[df$continent=='Europe' & df$month=='October',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+death_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow)
+fast_death = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_death = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+#### 3 Highest death rate countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_death, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Highest death rate countries in each continent')
+```
+
+#### 3 Least death rate countries in each continent
+```{r,fig.width=10,fig.height=10}
+ggplot(slow_death, aes(x=factor(month, levels=month_names), y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Least death rate countries in each continent')
+```
+
+#### Death rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('Death rate in continents')
+```
+
+#### Death rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Death rate (%)') + ggtitle('Recovery rate (%) vs Population density condtioned on month and continent') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,500))
+```
+
+#### Death rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Death rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+## Question 3
+
+### February - April
+
+
+```{r}
+data = read.csv('data.csv')
+data = na.omit(data)
+
+# data$date = as.Date(data$date,"%m.%d.%y")
+
+data = data[as.Date('2020-02-01')<=as.Date(data$date,"%Y-%m-%d") & as.Date(data$date,"%Y-%m-%d")<=as.Date('2020-04-30'),]
+
+df = data[,c('country', 'continent', 'cases', 'deaths','recovered','month', 'pop_density', "land_area")]
+
+df = setNames(aggregate(list(df$cases, df$deaths, df$recovered), by=list(df$country, df$continent, df$month),sum), c("country",'continent','month','cases', 'deaths','recovered'))
+
+df = distinct(merge(x=df, y=data[,c('country','population')]))
+df = distinct(merge(x=df, y=data[,c('country','pop_density')]))
+df = distinct(merge(x=df, y=data[,c('country','land_area')]))
+
+
+month_names = c("February","March","April","May","June","July","August","September", "October")
+
+actuals_df = data.frame()
+
+for (i in unique(df$country)){
+  temp = df[df$country==i,]
+  
+  sort_key=factor(temp$month, levels=month_names)
+  temp=temp[order(sort_key),]
+  
+  temp$cases = c(temp$cases[1],diff(temp$cases))
+  temp$deaths = c(temp$deaths[1],diff(temp$deaths))
+  temp$recovered = c(temp$recovered[1],diff(temp$recovered))
+  
+  actuals_df = rbind(actuals_df, temp)
+}
+
+
+cont_df = setNames(aggregate(list(df$cases, df$deaths, df$recovered, df$population, df$land_area), by=list(df$continent, df$month),sum), c('continent','month','cases', 'deaths', 'recovered', 'population', 'land_area'))
+
+cont_df$pop_density = cont_df$population / cont_df$land_area
+
+cont_actuals_df = setNames(aggregate(list(actuals_df$cases, actuals_df$deaths, actuals_df$recovered, actuals_df$population, actuals_df$land_area), by=list(actuals_df$continent, actuals_df$month),sum), c('continent','month','cases', 'deaths','recovered','population', 'land_area'))
+
+cont_actuals_df$pop_density = cont_actuals_df$population / cont_actuals_df$land_area
+
+
+df$recovery_rate = df$recovered / df$cases
+df$death_rate = df$deaths / df$cases
+df = replace(df, is.na(df), 0)
+
+actuals_df$recovery_rate = actuals_df$recovered / actuals_df$cases
+actuals_df$death_rate = actuals_df$deaths / actuals_df$cases
+actuals_df = replace(actuals_df, is.na(actuals_df), 0)
+
+cont_df$recovery_rate = cont_df$recovered / cont_df$cases
+cont_df$death_rate = cont_df$deaths / cont_df$cases
+cont_df = replace(cont_df, is.na(cont_df), 0)
+
+cont_actuals_df$recovery_rate = cont_actuals_df$recovered / cont_actuals_df$cases
+cont_actuals_df$death_rate = cont_actuals_df$deaths / cont_actuals_df$cases
+cont_actuals_df = replace(cont_actuals_df, is.na(cont_actuals_df), 0)
+```
+
+#### Recovery rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='April',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_fast$type = 'Fastest recovering countries'
+asia_slow$type = 'Slowest recovering countries'
+
+africa_df = df[df$continent=='Africa' & df$month=='April',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_fast$type = 'Fastest recovering countries'
+africa_slow$type = 'Slowest recovering countries'
+
+america_df = df[df$continent=='Americas'& df$month=='April',]
+america_fast = semi_join(df, america_df[order(-america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_fast$type = 'Fastest recovering countries'
+america_slow$type = 'Slowest recovering countries'
+
+europe_df = df[df$continent=='Europe' & df$month=='April',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_fast$type = 'Fastest recovering countries'
+europe_slow$type = 'Slowest recovering countries'
+
+recovery_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow)
+fast_recovery = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_recovery = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+##### 3 Fastest recovering countries in each continent
+
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Fastest recovering countries in each continent')
+```
+
+##### 3 Slowest recovering countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(slow_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Slowest recovering countries in each continent')
+```
+
+##### Recovery rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('Recovery rate in continents')
+```
+
+##### Recovery rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=.75, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Recovery rate (%)') + ggtitle('Recovery rate in continents') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,2200))
+```
+
+##### Recovery rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Recovery rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+
+#### Death Rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='April',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+africa_df = df[df$continent=='Africa' & df$month=='April',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+america_df = df[df$continent=='Americas'& df$month=='April',]
+america_fast = semi_join(df, america_df[order(-america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+europe_df = df[df$continent=='Europe' & df$month=='April',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+oceania_df = df[df$continent=='Oceania' & df$month=='April',]
+oceania_fast = semi_join(df, oceania_df[order(-oceania_df$death_rate),][1:3,], by=c('country'='country'))
+oceania_slow = semi_join(df, oceania_df[order(oceania_df$death_rate),][1:3,], by=c('country'='country'))
+
+death_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow, oceania_fast, oceania_slow)
+fast_death = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_death = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+##### 3 Highest death rate countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_death, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Highest death rate countries in each continent')
+```
+
+##### 3 Least death rate countries in each continent
+```{r,fig.width=10,fig.height=10}
+ggplot(slow_death, aes(x=factor(month, levels=month_names), y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Least death rate countries in each continent')
+```
+
+##### Death rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('Death rate in continents')
+```
+
+##### Death rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Death rate (%)') + ggtitle('Recovery rate (%) vs Population density condtioned on month and continent') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,500))
+```
+
+##### Death rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Death rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+### May - July
+
+
+```{r}
+data = read.csv('data.csv')
+data = na.omit(data)
+
+
+
+data = data[as.Date('2020-05-01')<=as.Date(data$date,"%Y-%m-%d") & as.Date(data$date,"%Y-%m-%d")<=as.Date('2020-07-31'),]
+df = data[,c('country', 'continent', 'cases', 'deaths','recovered','month', 'pop_density', "land_area")]
+
+df = setNames(aggregate(list(df$cases, df$deaths, df$recovered), by=list(df$country, df$continent, df$month),sum), c("country",'continent','month','cases', 'deaths','recovered'))
+
+df = distinct(merge(x=df, y=data[,c('country','population')]))
+df = distinct(merge(x=df, y=data[,c('country','pop_density')]))
+df = distinct(merge(x=df, y=data[,c('country','land_area')]))
+
+
+month_names = c("February","March","April","May","June","July","August","September", "October")
+
+actuals_df = data.frame()
+
+for (i in unique(df$country)){
+  temp = df[df$country==i,]
+  
+  sort_key=factor(temp$month, levels=month_names)
+  temp=temp[order(sort_key),]
+  
+  temp$cases = c(temp$cases[1],diff(temp$cases))
+  temp$deaths = c(temp$deaths[1],diff(temp$deaths))
+  temp$recovered = c(temp$recovered[1],diff(temp$recovered))
+  
+  actuals_df = rbind(actuals_df, temp)
+}
+
+
+cont_df = setNames(aggregate(list(df$cases, df$deaths, df$recovered, df$population, df$land_area), by=list(df$continent, df$month),sum), c('continent','month','cases', 'deaths', 'recovered', 'population', 'land_area'))
+
+cont_df$pop_density = cont_df$population / cont_df$land_area
+
+cont_actuals_df = setNames(aggregate(list(actuals_df$cases, actuals_df$deaths, actuals_df$recovered, actuals_df$population, actuals_df$land_area), by=list(actuals_df$continent, actuals_df$month),sum), c('continent','month','cases', 'deaths','recovered','population', 'land_area'))
+
+cont_actuals_df$pop_density = cont_actuals_df$population / cont_actuals_df$land_area
+
+
+df$recovery_rate = df$recovered / df$cases
+df$death_rate = df$deaths / df$cases
+df = replace(df, is.na(df), 0)
+
+actuals_df$recovery_rate = actuals_df$recovered / actuals_df$cases
+actuals_df$death_rate = actuals_df$deaths / actuals_df$cases
+actuals_df = replace(actuals_df, is.na(actuals_df), 0)
+
+cont_df$recovery_rate = cont_df$recovered / cont_df$cases
+cont_df$death_rate = cont_df$deaths / cont_df$cases
+cont_df = replace(cont_df, is.na(cont_df), 0)
+
+cont_actuals_df$recovery_rate = cont_actuals_df$recovered / cont_actuals_df$cases
+cont_actuals_df$death_rate = cont_actuals_df$deaths / cont_actuals_df$cases
+cont_actuals_df = replace(cont_actuals_df, is.na(cont_actuals_df), 0)
+```
+
+#### Recovery rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='July',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_fast$type = 'Fastest recovering countries'
+asia_slow$type = 'Slowest recovering countries'
+
+africa_df = df[df$continent=='Africa' & df$month=='July',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_fast$type = 'Fastest recovering countries'
+africa_slow$type = 'Slowest recovering countries'
+
+america_df = df[df$continent=='Americas'& df$month=='July',]
+america_fast = semi_join(df, america_df[order(-america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_fast$type = 'Fastest recovering countries'
+america_slow$type = 'Slowest recovering countries'
+
+europe_df = df[df$continent=='Europe' & df$month=='July',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_fast$type = 'Fastest recovering countries'
+europe_slow$type = 'Slowest recovering countries'
+
+recovery_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow)
+fast_recovery = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_recovery = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+##### 3 Fastest recovering countries in each continent
+
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Fastest recovering countries in each continent')
+```
+
+##### 3 Slowest recovering countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(slow_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Slowest recovering countries in each continent')
+```
+
+##### Recovery rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('Recovery rate in continents')
+```
+
+##### Recovery rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=.75, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Recovery rate (%)') + ggtitle('Recovery rate in continents') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,2200))
+```
+
+##### Recovery rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Recovery rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+
+#### Death Rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='July',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+africa_df = df[df$continent=='Africa' & df$month=='July',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+america_df = df[df$continent=='Americas'& df$month=='July',]
+america_fast = semi_join(df, america_df[order(-america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+europe_df = df[df$continent=='Europe' & df$month=='July',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+death_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow)
+fast_death = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_death = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+##### 3 Highest death rate countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_death, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Highest death rate countries in each continent')
+```
+
+##### 3 Least death rate countries in each continent
+```{r,fig.width=10,fig.height=10}
+ggplot(slow_death, aes(x=factor(month, levels=month_names), y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Least death rate countries in each continent')
+```
+
+##### Death rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('Death rate in continents')
+```
+
+##### Death rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Death rate (%)') + ggtitle('Recovery rate (%) vs Population density condtioned on month and continent') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,500))
+```
+
+##### Death rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Death rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+### August - October
+
+
+```{r}
+data = read.csv('data.csv')
+data = na.omit(data)
+
+data = data[as.Date('2020-08-01')<=as.Date(data$date,"%Y-%m-%d") & as.Date(data$date,"%Y-%m-%d")<=as.Date('2020-10-31'),]
+
+df = data[,c('country', 'continent', 'cases', 'deaths','recovered','month', 'pop_density', "land_area")]
+
+df = setNames(aggregate(list(df$cases, df$deaths, df$recovered), by=list(df$country, df$continent, df$month),sum), c("country",'continent','month','cases', 'deaths','recovered'))
+
+df = distinct(merge(x=df, y=data[,c('country','population')]))
+df = distinct(merge(x=df, y=data[,c('country','pop_density')]))
+df = distinct(merge(x=df, y=data[,c('country','land_area')]))
+
+
+month_names = c("February","March","April","May","June","July","August","September", "October")
+
+actuals_df = data.frame()
+
+for (i in unique(df$country)){
+  temp = df[df$country==i,]
+  
+  sort_key=factor(temp$month, levels=month_names)
+  temp=temp[order(sort_key),]
+  
+  temp$cases = c(temp$cases[1],diff(temp$cases))
+  temp$deaths = c(temp$deaths[1],diff(temp$deaths))
+  temp$recovered = c(temp$recovered[1],diff(temp$recovered))
+  
+  actuals_df = rbind(actuals_df, temp)
+}
+
+
+cont_df = setNames(aggregate(list(df$cases, df$deaths, df$recovered, df$population, df$land_area), by=list(df$continent, df$month),sum), c('continent','month','cases', 'deaths', 'recovered', 'population', 'land_area'))
+
+cont_df$pop_density = cont_df$population / cont_df$land_area
+
+cont_actuals_df = setNames(aggregate(list(actuals_df$cases, actuals_df$deaths, actuals_df$recovered, actuals_df$population, actuals_df$land_area), by=list(actuals_df$continent, actuals_df$month),sum), c('continent','month','cases', 'deaths','recovered','population', 'land_area'))
+
+cont_actuals_df$pop_density = cont_actuals_df$population / cont_actuals_df$land_area
+
+
+df$recovery_rate = df$recovered / df$cases
+df$death_rate = df$deaths / df$cases
+df = replace(df, is.na(df), 0)
+
+actuals_df$recovery_rate = actuals_df$recovered / actuals_df$cases
+actuals_df$death_rate = actuals_df$deaths / actuals_df$cases
+actuals_df = replace(actuals_df, is.na(actuals_df), 0)
+
+cont_df$recovery_rate = cont_df$recovered / cont_df$cases
+cont_df$death_rate = cont_df$deaths / cont_df$cases
+cont_df = replace(cont_df, is.na(cont_df), 0)
+
+cont_actuals_df$recovery_rate = cont_actuals_df$recovered / cont_actuals_df$cases
+cont_actuals_df$death_rate = cont_actuals_df$deaths / cont_actuals_df$cases
+cont_actuals_df = replace(cont_actuals_df, is.na(cont_actuals_df), 0)
+```
+
+#### Recovery rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='October',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+asia_fast$type = 'Fastest recovering countries'
+asia_slow$type = 'Slowest recovering countries'
+
+africa_df = df[df$continent=='Africa' & df$month=='October',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+africa_fast$type = 'Fastest recovering countries'
+africa_slow$type = 'Slowest recovering countries'
+
+america_df = df[df$continent=='Americas'& df$month=='October',]
+america_fast = semi_join(df, america_df[order(-america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+america_fast$type = 'Fastest recovering countries'
+america_slow$type = 'Slowest recovering countries'
+
+europe_df = df[df$continent=='Europe' & df$month=='October',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$recovery_rate),][1:num_countries,], by=c('country'='country'))
+europe_fast$type = 'Fastest recovering countries'
+europe_slow$type = 'Slowest recovering countries'
+
+recovery_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow)
+fast_recovery = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_recovery = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+##### 3 Fastest recovering countries in each continent
+
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Fastest recovering countries in each continent')
+```
+
+##### 3 Slowest recovering countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(slow_recovery, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('3 Slowest recovering countries in each continent')
+```
+
+##### Recovery rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*recovery_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('recovery rate(%)') + ggtitle('Recovery rate in continents')
+```
+
+##### Recovery rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=.75, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Recovery rate (%)') + ggtitle('Recovery rate in continents') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,2200))
+```
+
+##### Recovery rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*recovery_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Recovery rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
+
+
+#### Death Rate
+
+```{r}
+num_countries = 3
+
+asia_df = df[df$continent=='Asia' & df$month=='October',]
+asia_fast = semi_join(df, asia_df[order(-asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+asia_slow = semi_join(df, asia_df[order(asia_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+africa_df = df[df$continent=='Africa' & df$month=='October',]
+africa_fast = semi_join(df, africa_df[order(-africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+africa_slow = semi_join(df, africa_df[order(africa_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+america_df = df[df$continent=='Americas'& df$month=='October',]
+america_fast = semi_join(df, america_df[order(-america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+america_slow = semi_join(df, america_df[order(america_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+europe_df = df[df$continent=='Europe' & df$month=='October',]
+europe_fast = semi_join(df, europe_df[order(-europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+europe_slow = semi_join(df, europe_df[order(europe_df$death_rate),][1:num_countries,], by=c('country'='country'))
+
+oceania_df = df[df$continent=='Oceania' & df$month=='October',]
+oceania_fast = semi_join(df, oceania_df[order(-oceania_df$death_rate),][1:3,], by=c('country'='country'))
+oceania_slow = semi_join(df, oceania_df[order(oceania_df$death_rate),][1:3,], by=c('country'='country'))
+
+death_df = rbind(asia_fast, asia_slow, america_fast, america_slow, europe_fast, europe_slow, africa_fast, africa_slow, oceania_fast, oceania_slow)
+fast_death = rbind(asia_fast,  america_fast, europe_fast, africa_fast)
+slow_death = rbind(asia_slow,  america_slow,  europe_slow,  africa_slow)
+```
+
+##### 3 Highest death rate countries in each continent
+```{r,fig.width=7,fig.height=7}
+ggplot(fast_death, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Highest death rate countries in each continent')
+```
+
+##### 3 Least death rate countries in each continent
+```{r,fig.width=10,fig.height=10}
+ggplot(slow_death, aes(x=factor(month, levels=month_names), y=100*death_rate, color=country, group=country)) + geom_line() + geom_point() +  facet_wrap(~continent, ncol=2) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('3 Least death rate countries in each continent')
+```
+
+##### Death rate in continents
+```{r,fig.width=7,fig.height=7}
+ggplot(cont_df, aes(x=factor(month, levels=month_names) , y=100*death_rate, color=continent, group=continent)) + geom_line() + geom_point() + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('month') + ylab('death rate(%)') + ggtitle('Death rate in continents')
+```
+
+##### Death rate (%) vs Population density condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=pop_density, y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population density') + ylab('Death rate (%)') + ggtitle('Recovery rate (%) vs Population density condtioned on month and continent') + scale_color_manual(values = cb_palette) + scale_x_continuous(limits = c(0,500))
+```
+
+##### Death rate (%) vs Population (log) condtioned on month and continent
+
+```{r, fig.width=15,fig.height=15}
+
+ggplot(df %>% mutate(group = paste(month,continent, sep="-")), aes(x=log10(population), y=100*death_rate)) + geom_point() + geom_smooth(method='loess', span=1, se=F) + facet_wrap(~group, ncol=4) + theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1, size=16), axis.text.y = element_text(size=16), axis.title.x = element_text(size=16), axis.title.y = element_text(size=16), plot.title = element_text(size=20)) + xlab('Population (log)') + ylab('Recovery rate (%)') + ggtitle('Death rate (%) vs Population (log) condtioned on month and continent') + scale_color_manual(values = cb_palette)
+```
